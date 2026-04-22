@@ -1,0 +1,2 @@
+model : sapienzanlp/Minerva-350M-base-v1.0
+token : INSERT:ACCESS_TOKEN
