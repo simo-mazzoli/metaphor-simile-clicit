@@ -95,60 +95,61 @@ def cloze_surprisal_for_word(
     tokenizer: AutoTokenizer,
     device: torch.device,
 ) -> float:
-    """Autoregressive cloze surprisal for all occurrences of `word` in `text`.
-
-    For each target sub-token x_i aligned to `word`, compute surprisal as -log P(x_i | prefix).
-    If the word appears multiple times, return the summed surprisal across occurrences.
     """
+    Approximate cloze surprisal following Momen et al. (2026):
+
+    - Remove the target word
+    - Construct a prompt with left + right context
+    - Compute -log P(word | cloze prompt)
+
+    If multiple occurrences exist, returns the sum.
+    """
+
     spans = _word_spans(text, word)
     if not spans:
         return float("nan")
 
-    encoded = tokenizer(
-        text,
-        return_tensors="pt",
-        add_special_tokens=True,
-        return_offsets_mapping=True,
-    )
-
-    if not tokenizer.is_fast:
-        raise ValueError(
-            "A fast tokenizer is required to compute offset mappings for cloze surprisal."
-        )
-
-    input_ids = encoded["input_ids"].to(device)
-    offsets = encoded["offset_mapping"][0].tolist()
-
-    outputs = model(input_ids=input_ids)
-    logits = outputs.logits[:, :-1, :]
-    target_ids = input_ids[:, 1:]
-
-    log_probs = torch.log_softmax(logits, dim=-1)
-    token_log_probs = (
-        log_probs.gather(dim=-1, index=target_ids.unsqueeze(-1)).squeeze(-1).squeeze(0)
-    )
-
     total_surprisal = 0.0
 
-    # offsets includes all input tokens, while token_log_probs predicts tokens from index 1 onward.
     for span_start, span_end in spans:
-        token_indices = [
-            idx
-            for idx, (tok_start, tok_end) in enumerate(offsets)
-            if not (tok_start == 0 and tok_end == 0)
-            and tok_start >= span_start
-            and tok_end <= span_end
-        ]
+        left = text[:span_start].strip()
+        right = text[span_end:].strip()
 
-        if not token_indices:
-            continue
+        # --- Cloze-style prompt (important part) ---
+        # You can tweak this depending on the model
+        prompt = f"{left} ___ {right}\nLa parola mancante è:"
 
-        for idx in token_indices:
-            if idx == 0:
-                continue
-            total_surprisal += -token_log_probs[idx - 1].item()
+        # Tokenize prompt
+        encoded_prompt = tokenizer(prompt, return_tensors="pt").to(device)
 
-    return total_surprisal if total_surprisal > 0 else float("nan")
+        # Tokenize target word (may be multiple tokens)
+        target_ids = tokenizer(
+            word,
+            return_tensors="pt",
+            add_special_tokens=False
+        )["input_ids"].to(device)[0]
+
+        input_ids = encoded_prompt["input_ids"]
+
+        # We will compute log P(word | prompt) autoregressively
+        log_prob_sum = 0.0
+
+        for token_id in target_ids:
+            outputs = model(input_ids=input_ids)
+            logits = outputs.logits[:, -1, :]
+            log_probs = torch.log_softmax(logits, dim=-1)
+
+            log_prob = log_probs[0, token_id].item()
+            log_prob_sum += log_prob
+
+            # Append predicted token to continue generation
+            input_ids = torch.cat(
+                [input_ids, token_id.view(1, 1)], dim=1
+            )
+
+        total_surprisal += -log_prob_sum
+
+    return total_surprisal
 
 
 def build_parser() -> argparse.ArgumentParser:
