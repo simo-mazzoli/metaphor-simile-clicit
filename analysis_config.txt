@@ -1,0 +1,9 @@
+# Add one independent variable column name per line.
+# These columns must exist in your llm output CSV file(s).
+# Example:
+# Eng_aptness
+# SemanticDistance
+# Familiarity
+
+Eng_aptness
+SemanticDistance
