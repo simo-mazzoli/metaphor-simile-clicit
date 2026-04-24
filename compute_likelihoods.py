@@ -115,23 +115,16 @@ def cloze_surprisal_for_word(
         left = text[:span_start].strip()
         right = text[span_end:].strip()
 
-        # --- Cloze-style prompt (important part) ---
-        # You can tweak this depending on the model
         prompt = f"{left} ___ {right}\nLa parola mancante è:"
 
-        # Tokenize prompt
         encoded_prompt = tokenizer(prompt, return_tensors="pt").to(device)
 
-        # Tokenize target word (may be multiple tokens)
-        target_ids = tokenizer(
-            word,
-            return_tensors="pt",
-            add_special_tokens=False
-        )["input_ids"].to(device)[0]
+        target_ids = tokenizer(word, return_tensors="pt", add_special_tokens=False)[
+            "input_ids"
+        ].to(device)[0]
 
         input_ids = encoded_prompt["input_ids"]
 
-        # We will compute log P(word | prompt) autoregressively
         log_prob_sum = 0.0
 
         for token_id in target_ids:
@@ -142,14 +135,16 @@ def cloze_surprisal_for_word(
             log_prob = log_probs[0, token_id].item()
             log_prob_sum += log_prob
 
-            # Append predicted token to continue generation
-            input_ids = torch.cat(
-                [input_ids, token_id.view(1, 1)], dim=1
-            )
+            input_ids = torch.cat([input_ids, token_id.view(1, 1)], dim=1)
 
         total_surprisal += -log_prob_sum
 
     return total_surprisal
+
+
+def sanitize_model_name(model_name: str) -> str:
+    sanitized = re.sub(r"[^a-zA-Z0-9]+", "_", model_name.strip())
+    return sanitized.strip("_") or "model"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -175,7 +170,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--output",
         type=Path,
         default=Path("data/stimuli_with_ll_and_cloze.csv"),
-        help="Output CSV path",
+        help=(
+            "Base output CSV path. If --include-model-in-output-name is set, "
+            "the model name suffix is added to the filename."
+        ),
+    )
+    parser.add_argument(
+        "--include-model-in-output-name",
+        action="store_true",
+        help="Append sanitized model name to output filename.",
     )
     return parser
 
@@ -220,9 +223,7 @@ def main() -> None:
         _, met_norm, _ = sentence_log_likelihood(metaphor_text, model, tokenizer, device)
         _, sim_norm, _ = sentence_log_likelihood(simile_text, model, tokenizer, device)
 
-        come_surprisal = cloze_surprisal_for_word(
-            simile_text, "come", model, tokenizer, device
-        )
+        come_surprisal = cloze_surprisal_for_word(simile_text, "come", model, tokenizer, device)
 
         metaphor_norm_ll.append(met_norm)
         simile_norm_ll.append(sim_norm)
@@ -231,11 +232,19 @@ def main() -> None:
     df["Metaphor_log_likelihood_norm"] = metaphor_norm_ll
     df["Simile_log_likelihood_norm"] = simile_norm_ll
     df["Simile_come_cloze_surprisal"] = simile_come_surprisal
+    df["source_llm"] = model_name
 
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(args.output, index=False)
+    output_path = args.output
+    if args.include_model_in_output_name:
+        model_tag = sanitize_model_name(model_name)
+        output_path = output_path.with_name(
+            f"{output_path.stem}_{model_tag}{output_path.suffix}"
+        )
 
-    print(f"Saved results to: {args.output}")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(output_path, index=False)
+
+    print(f"Saved results to: {output_path}")
     print(f"Model: {model_name}")
     print(f"Rows processed: {len(df)}")
 
