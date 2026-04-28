@@ -6,6 +6,9 @@ Metrics:
    using a causal (autoregressive) Hugging Face Transformer model.
 2) Cloze surprisal for the target word "come" in sentences from "Simile".
 
+Results are written to model-specific columns so the same output CSV can store
+metrics from multiple runs with different models.
+
 The model name and HF access token are read from a TXT config file with format:
     model : sapienzanlp/Minerva-350M-base-v1.0
     token : INSERT:ACCESS_TOKEN
@@ -229,14 +232,45 @@ def main() -> None:
         simile_norm_ll.append(sim_norm)
         simile_come_surprisal.append(come_surprisal)
 
-    df["Metaphor_log_likelihood_norm"] = metaphor_norm_ll
-    df["Simile_log_likelihood_norm"] = simile_norm_ll
-    df["Simile_come_cloze_surprisal"] = simile_come_surprisal
-    df["source_llm"] = model_name
+    model_tag = sanitize_model_name(model_name)
+    model_specific_columns = {
+        f"Metaphor_log_likelihood_norm__{model_tag}": metaphor_norm_ll,
+        f"Simile_log_likelihood_norm__{model_tag}": simile_norm_ll,
+        f"Simile_come_cloze_surprisal__{model_tag}": simile_come_surprisal,
+        f"source_llm__{model_tag}": [model_name] * len(df),
+    }
 
     output_path = args.output
+    if output_path.exists():
+        existing_df = pd.read_csv(output_path)
+
+        for required in ["Metaphor", "Simile"]:
+            if required not in existing_df.columns:
+                raise ValueError(
+                    f"Existing output file is missing required column '{required}': {output_path}"
+                )
+
+        if len(existing_df) != len(df):
+            raise ValueError(
+                "Existing output file has a different row count than the input file. "
+                f"Input rows: {len(df)}, existing rows: {len(existing_df)}."
+            )
+
+        if not existing_df[["Metaphor", "Simile"]].equals(df[["Metaphor", "Simile"]]):
+            raise ValueError(
+                "Existing output file does not align with the current input rows in "
+                "columns ['Metaphor', 'Simile']."
+            )
+
+        for col_name, values in model_specific_columns.items():
+            existing_df[col_name] = values
+
+        df = existing_df
+    else:
+        for col_name, values in model_specific_columns.items():
+            df[col_name] = values
+
     if args.include_model_in_output_name:
-        model_tag = sanitize_model_name(model_name)
         output_path = output_path.with_name(
             f"{output_path.stem}_{model_tag}{output_path.suffix}"
         )
